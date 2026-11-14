@@ -1,0 +1,508 @@
+<!doctype html>
+<!--
+  Dashboard-Vorschau für Home Assistant
+  Ablage: /config/www/dashboard-viewer/index.html  →  http://<ha>:8123/local/dashboard-viewer/index.html
+  - Buttons oben: alle Dashboards (live aus HA geladen), darunter die Ansichten des gewählten Dashboards
+  - iframe rendert immer mit fester Auflösung (Standard 2240 × 1400) und wird nur skaliert:
+      14″  = echte Tablet-Größe auf dem Monitor (aus Monitor-Diagonale + Auflösung berechnet, kalibrierbar)
+      Einpassen = so groß wie das Fenster erlaubt
+      1:1  = ein Tablet-Pixel = ein Monitor-Pixel
+      Regler = freie Vergrößerung in % der 14″-Größe
+  - Läuft auf derselben Adresse wie HA → kein X-Frame-Options-Problem, Anmeldung wird mitbenutzt.
+  URL-Parameter (optional): ?dash=my-dashboard&view=1&mode=real|fit|pixel&w=2240&h=1400
+-->
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dashboard-Vorschau</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@mdi/font@7.4.47/css/materialdesignicons.min.css">
+<style>
+  /* Farben wie das dunkle Standard-Theme von Home Assistant – immer dunkel */
+  :root {
+    --primary: #03a9f4; --primary-rgb: 3, 169, 244;
+    --bg: #111111; --card: #1c1c1c; --line: rgba(225, 225, 225, .12);
+    --text: #e1e1e1; --muted: #9b9b9b;
+    --btn: rgba(225, 225, 225, .06); --btn-h: rgba(225, 225, 225, .11);
+    --stage: #0b0b0b; --bezel: #030303; --warn: #ffa600;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 14px/1.3 Roboto, "Segoe UI", system-ui, sans-serif;
+    display: flex; overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+  #main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+
+  /* Seitenleiste wie in Home Assistant */
+  aside {
+    width: 256px; flex: none; background: var(--card); border-right: 1px solid var(--line);
+    display: flex; flex-direction: column; transition: width .2s; z-index: 3;
+  }
+  aside.mini { width: 64px; }
+  .side-head {
+    height: 56px; display: flex; align-items: center; gap: 12px; padding: 0 12px;
+    border-bottom: 1px solid var(--line); font-size: 20px; font-weight: 400; white-space: nowrap; overflow: hidden;
+  }
+  .ib {
+    width: 40px; height: 40px; flex: none; border: 0; border-radius: 50%; background: none; color: var(--muted);
+    display: grid; place-items: center; cursor: pointer;
+  }
+  .ib:hover { background: var(--btn-h); color: var(--text); }
+  .ib svg { width: 24px; height: 24px; fill: currentColor; }
+  nav#dashRow { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 6px 0; }
+  nav .lbl { display: block; padding: 12px 20px; }
+  button.nav {
+    width: calc(100% - 8px); margin: 2px 4px; height: 44px; padding: 0 16px; border: 0; border-radius: 12px;
+    background: none; color: var(--text); font: inherit; font-weight: 500; text-align: left;
+    display: flex; align-items: center; gap: 20px; cursor: pointer; white-space: nowrap; overflow: hidden;
+  }
+  button.nav:hover { background: var(--btn); }
+  button.nav .mdi { font-size: 24px; line-height: 1; color: var(--muted); width: 24px; flex: none; text-align: center; }
+  button.nav.on { background: rgba(var(--primary-rgb), .14); color: var(--primary); }
+  button.nav.on .mdi { color: var(--primary); }
+  button.nav .t { overflow: hidden; text-overflow: ellipsis; }
+  aside.mini button.nav .t, aside.mini .side-head span, aside.mini nav .lbl { display: none; }
+  aside.mini button.nav { justify-content: center; padding: 0; }
+  header {
+    background: var(--card); border-bottom: 1px solid var(--line);
+    padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; position: relative; z-index: 2;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, .35);
+  }
+  .row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .row.sub { min-height: 36px; }
+  .lbl { color: var(--muted); font-size: 12px; margin-right: 2px; }
+
+  /* Buttons im Stil der HA-Kacheln: abgerundet, Symbol + Text, aktiv = Primärfarbe getönt */
+  button.b {
+    font: inherit; font-weight: 500; color: var(--text); background: var(--btn);
+    border: 1px solid var(--line); border-radius: 12px; height: 38px; padding: 0 14px;
+    display: inline-flex; align-items: center; gap: 8px; cursor: pointer; white-space: nowrap;
+    transition: background .15s, border-color .15s, color .15s;
+  }
+  button.b:hover { background: var(--btn-h); }
+  button.b[hidden] { display: none; }
+  button.b:active { transform: translateY(1px); }
+  button.b:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+  button.b.on { background: rgba(var(--primary-rgb), .2); border-color: rgba(var(--primary-rgb), .7); color: #7fd3fa; }
+  button.b.sm { height: 34px; padding: 0 12px; font-size: 13px; }
+  button.b .mdi { font-size: 18px; line-height: 1; color: var(--muted); }
+  button.b.on .mdi { color: var(--primary); }
+  button.b svg { width: 18px; height: 18px; fill: currentColor; flex: none; }
+  button.b.act svg { color: var(--primary); }
+  .grp { display: inline-flex; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  .grp button.b { border: 0; border-radius: 0; }
+  .grp button.b + button.b { border-left: 1px solid var(--line); }
+  .ctl { margin-left: auto; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  input[type=range] { width: 150px; accent-color: var(--primary); }
+  .info { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; min-width: 190px; text-align: right; }
+  #msg { color: var(--warn); font-size: 13px; }
+  #msg:empty { display: none; }
+
+  main#stage { flex: 1; overflow: auto; background: var(--stage); display: flex; }
+  #wrap { margin: auto; padding: 16px; }
+  #bezel { background: var(--bezel); border-radius: 18px; padding: 14px; box-shadow: 0 0 0 1px #2a2a2a, 0 10px 40px rgba(0,0,0,.6); }
+  #bezel.plain { background: none; padding: 0; border-radius: 0; box-shadow: none; }
+  #frame { position: relative; overflow: hidden; background: #000; }
+  #bezel:not(.plain) #frame { border-radius: 4px; }
+  #ha { position: absolute; left: 0; top: 0; border: 0; transform-origin: 0 0; background: #111; }
+
+  #settings {
+    position: absolute; right: 12px; top: calc(100% + 6px); width: 360px; max-width: calc(100vw - 24px);
+    background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px;
+    box-shadow: 0 12px 40px rgba(0,0,0,.6); display: grid; gap: 10px;
+  }
+  #settings[hidden] { display: none; }
+  #settings h3 { margin: 0; font-size: 12px; color: var(--primary); font-weight: 500; text-transform: uppercase; letter-spacing: .06em; }
+  .f { display: grid; grid-template-columns: 1fr auto; gap: 6px; align-items: center; }
+  .f input[type=number] {
+    width: 86px; font: inherit; color: var(--text); background: var(--btn);
+    border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px;
+  }
+  .f input[type=number]:focus { outline: none; border-color: var(--primary); }
+  .pair { display: flex; gap: 4px; align-items: center; }
+  .pair input { width: 70px !important; }
+  .hint { color: var(--muted); font-size: 12px; }
+  label.chk { display: flex; gap: 8px; align-items: center; cursor: pointer; }
+  label.chk input { accent-color: var(--acc); }
+  hr { border: 0; border-top: 1px solid var(--line); margin: 2px 0; width: 100%; }
+</style>
+</head>
+<body>
+<aside id="side">
+  <div class="side-head">
+    <button class="ib" id="menu" title="Seitenleiste ein-/ausklappen">
+      <svg viewBox="0 0 24 24"><path d="M3,6H21V8H3V6M3,11H21V13H3V11M3,16H21V18H3V16Z"/></svg></button>
+    <span>Dashboards</span>
+  </div>
+  <nav id="dashRow"><span class="lbl">Wird geladen …</span></nav>
+</aside>
+<div id="main">
+<header>
+  <div class="row sub">
+    <div class="row" id="viewRow"></div>
+    <span id="msg"></span>
+    <div class="ctl">
+      <div class="grp" id="modeGrp">
+        <button class="b sm" data-mode="real" title="Echte Tablet-Größe auf diesem Monitor">14″</button>
+        <button class="b sm" data-mode="fit" title="So groß wie das Fenster erlaubt">Einpassen</button>
+        <button class="b sm" data-mode="pixel" title="1 Tablet-Pixel = 1 Monitor-Pixel">1:1</button>
+      </div>
+      <input type="range" id="zoom" min="25" max="300" step="1" title="Vergrößerung in % der 14″-Größe">
+      <span class="info" id="info"></span>
+      <button class="b sm act" id="reload" title="Dashboard im Rahmen neu laden (F5)">
+        <svg viewBox="0 0 24 24"><path d="M17.65,6.35C16.2,4.9 14.21,4 12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20C15.73,20 18.84,17.45 19.73,14H17.65C16.83,16.33 14.61,18 12,18A6,6 0 0,1 6,12A6,6 0 0,1 12,6C13.66,6 15.14,6.69 16.22,7.78L13,11H20V4L17.65,6.35Z"/></svg>Neu laden</button>
+      <button class="b sm act" id="hardreload" title="Alles ohne Zwischenspeicher neu laden (wie Strg + F5)">
+        <svg viewBox="0 0 24 24"><path d="M19,8L15,12H18A6,6 0 0,1 12,18C11,18 10.03,17.75 9.2,17.3L7.74,18.76C8.97,19.54 10.43,20 12,20A8,8 0 0,0 20,12H23M6,12A6,6 0 0,1 12,6C13,6 13.97,6.25 14.8,6.7L16.26,5.24C15.03,4.46 13.57,4 12,4A8,8 0 0,0 4,12H1L5,16L9,12"/></svg>Hart neu laden</button>
+      <button class="b sm act" id="newtab" title="Aktuelle Seite in neuem Tab öffnen">
+        <svg viewBox="0 0 24 24"><path d="M14,3V5H17.59L7.76,14.83L9.17,16.24L19,6.41V10H21V3M19,19H5V5H12V3H5C3.89,3 3,3.9 3,5V19A2,2 0 0,0 5,21H19A2,2 0 0,0 21,19V12H19V19Z"/></svg>Neuer Tab</button>
+      <button class="b sm act" id="toha" title="Zurück zu Home Assistant" hidden>
+        <svg viewBox="0 0 24 24"><path d="M10,20V14H14V20H19V12H22L12,3L2,12H5V20H10Z"/></svg>Home Assistant</button>
+      <button class="b sm act" id="gear" title="Einstellungen">
+        <svg viewBox="0 0 24 24"><path d="M12,15.5A3.5,3.5 0 0,1 8.5,12A3.5,3.5 0 0,1 12,8.5A3.5,3.5 0 0,1 15.5,12A3.5,3.5 0 0,1 12,15.5M19.43,12.97C19.47,12.65 19.5,12.33 19.5,12C19.5,11.67 19.47,11.34 19.43,11L21.54,9.37C21.73,9.22 21.78,8.95 21.66,8.73L19.66,5.27C19.54,5.05 19.27,4.96 19.05,5.05L16.56,6.05C16.04,5.66 15.5,5.32 14.87,5.07L14.5,2.42C14.46,2.18 14.25,2 14,2H10C9.75,2 9.54,2.18 9.5,2.42L9.13,5.07C8.5,5.32 7.96,5.66 7.44,6.05L4.95,5.05C4.73,4.96 4.46,5.05 4.34,5.27L2.34,8.73C2.21,8.95 2.27,9.22 2.46,9.37L4.57,11C4.53,11.34 4.5,11.67 4.5,12C4.5,12.33 4.53,12.65 4.57,12.97L2.46,14.63C2.27,14.78 2.21,15.05 2.34,15.27L4.34,18.73C4.46,18.95 4.73,19.03 4.95,18.95L7.44,17.94C7.96,18.34 8.5,18.68 9.13,18.93L9.5,21.58C9.54,21.82 9.75,22 10,22H14C14.25,22 14.46,21.82 14.5,21.58L14.87,18.93C15.5,18.67 16.04,18.34 16.56,17.94L19.05,18.95C19.27,19.03 19.54,18.95 19.66,18.73L21.66,15.27C21.78,15.05 21.73,14.78 21.54,14.63L19.43,12.97Z"/></svg>Einstellungen</button>
+    </div>
+  </div>
+
+  <div id="settings" hidden>
+    <h3>Tablet</h3>
+    <div class="f"><span>Auflösung (px)</span>
+      <span class="pair"><input type="number" id="sW" min="200" step="1"> × <input type="number" id="sH" min="200" step="1"></span></div>
+    <div class="f"><span>Diagonale (Zoll)</span><input type="number" id="sTab" min="5" max="40" step="0.1"></div>
+    <hr>
+    <h3>Monitor</h3>
+    <div class="f"><span>Diagonale (Zoll)</span><input type="number" id="sMon" min="10" max="100" step="0.1"></div>
+    <div class="f"><span>Auflösung (leer = automatisch)</span>
+      <span class="pair"><input type="number" id="sMW" min="0" step="1"> × <input type="number" id="sMH" min="0" step="1"></span></div>
+    <div class="hint" id="detect"></div>
+    <hr>
+    <h3>Kalibrieren</h3>
+    <div class="hint">Im Modus „14″“ die Breite des Bildes (ohne Rahmen) mit dem Lineal messen und hier eintragen.</div>
+    <div class="f"><span>Gemessene Breite (cm)</span>
+      <span class="pair"><input type="number" id="sMeas" min="1" step="0.1"><button class="b sm" id="calib">OK</button></span></div>
+    <div class="f"><span class="hint" id="korrInfo"></span><button class="b sm" id="calibReset">Zurücksetzen</button></div>
+    <hr>
+    <label class="chk"><input type="checkbox" id="sKiosk"> Kiosk-Modus (Kopf- und Seitenleiste ausblenden)</label>
+    <label class="chk"><input type="checkbox" id="sSystem"> Auch Systemseiten anzeigen (Karte, Energie, Verlauf …)</label>
+    <label class="chk"><input type="checkbox" id="sBezel"> Tablet-Rahmen zeichnen</label>
+  </div>
+</header>
+
+<main id="stage">
+  <div id="wrap">
+    <div id="bezel">
+      <div id="frame"><iframe id="ha" allow="fullscreen; microphone; camera; autoplay; clipboard-write"></iframe></div>
+    </div>
+  </div>
+</main>
+</div>
+
+<script>
+(() => {
+  const $ = (s) => document.querySelector(s);
+  const KEY = 'dashboardViewer';
+  const DEF = {
+    w: 2240, h: 1400, tab: 14, mon: 32, monW: 0, monH: 0, korr: 1,
+    mode: 'real', pct: 100, kiosk: false, system: false, bezel: true, mini: false,
+    dash: null, view: null,
+  };
+  const S = Object.assign({}, DEF, read());
+  const q = new URLSearchParams(location.search);
+  if (q.get('dash')) { S.dash = q.get('dash'); S.view = q.get('view') || null; }
+  if (['real', 'fit', 'pixel'].includes(q.get('mode'))) S.mode = q.get('mode');
+  if (+q.get('w') > 0) S.w = +q.get('w');
+  if (+q.get('h') > 0) S.h = +q.get('h');
+  if (!S.dash) S.dash = 'lovelace';
+
+  function read() { try { return JSON.parse(localStorage.getItem(KEY)) || {}; } catch (e) { return {}; } }
+  function save() {
+    const { dash, view, ...rest } = S;
+    try { localStorage.setItem(KEY, JSON.stringify({ ...rest, dash, view })); } catch (e) {}
+  }
+  const nf = (v, d = 1) => v.toLocaleString('de-DE', { minimumFractionDigits: d, maximumFractionDigits: d });
+
+  /* ---------- Größe ---------- */
+  const dpr = () => window.devicePixelRatio || 1;
+  // Monitor-Auflösung in echten Pixeln (Windows-Skalierung/Browser-Zoom rausgerechnet)
+  const monRes = () => [S.monW || Math.round(screen.width * dpr()), S.monH || Math.round(screen.height * dpr())];
+  // CSS-Pixel pro Zentimeter auf diesem Monitor (inkl. Kalibrierfaktor)
+  function pxPerCm() {
+    const [rw, rh] = monRes();
+    const widthCm = S.mon * 2.54 * rw / Math.hypot(rw, rh);
+    return (rw / dpr()) / widthCm * S.korr;
+  }
+  const tabWidthCm = () => S.tab * 2.54 * S.w / Math.hypot(S.w, S.h);
+  const realScale = () => tabWidthCm() * pxPerCm() / S.w;
+  function fitScale() {
+    const st = $('#stage');
+    const pad = 32 + (S.bezel ? 28 : 0);
+    return Math.max(0.05, Math.min((st.clientWidth - pad) / S.w, (st.clientHeight - pad) / S.h));
+  }
+  function scale() {
+    switch (S.mode) {
+      case 'fit': return fitScale();
+      case 'pixel': return 1 / dpr();
+      case 'custom': return realScale() * S.pct / 100;
+      default: return realScale();
+    }
+  }
+
+  function layout() {
+    const s = scale();
+    const ifr = $('#ha');
+    ifr.style.width = S.w + 'px';
+    ifr.style.height = S.h + 'px';
+    ifr.style.transform = `scale(${s})`;
+    $('#frame').style.width = Math.round(S.w * s) + 'px';
+    $('#frame').style.height = Math.round(S.h * s) + 'px';
+    $('#bezel').classList.toggle('plain', !S.bezel);
+
+    const pct = s / realScale() * 100;
+    $('#zoom').value = Math.round(pct);
+    const cmW = S.w * s / pxPerCm(), cmH = S.h * s / pxPerCm();
+    $('#info').textContent = `${nf(cmW)} × ${nf(cmH)} cm · ${Math.round(pct)} % von ${nf(S.tab, S.tab % 1 ? 1 : 0)}″`;
+    $('#info').title = `Skalierung ${nf(s, 3)} · iframe intern ${S.w} × ${S.h} px`;
+    document.querySelectorAll('#modeGrp button').forEach((b) => b.classList.toggle('on', b.dataset.mode === S.mode));
+
+    const [rw, rh] = monRes();
+    $('#detect').textContent = `Erkannt: ${Math.round(screen.width * dpr())} × ${Math.round(screen.height * dpr())} px, ` +
+      `Skalierung ${Math.round(dpr() * 100)} % · verwendet ${rw} × ${rh} → ${nf(pxPerCm() / S.korr)} px/cm`;
+    $('#korrInfo').textContent = S.korr === 1 ? 'Nicht kalibriert' : `Korrektur ${nf(S.korr * 100)} %`;
+  }
+
+  /* ---------- Verbindung zu HA ---------- */
+  let conn = null;
+  function frameHass() {
+    try { return $('#ha').contentDocument.querySelector('home-assistant')?.hass || null; } catch (e) { return null; }
+  }
+  async function token() {
+    let t; try { t = JSON.parse(localStorage.getItem('hassTokens')); } catch (e) {}
+    if (!t || !t.refresh_token) return null;
+    if (!t.access_token || Date.now() > (t.expires || 0) - 60000) {
+      const r = await fetch('/auth/token', {
+        method: 'POST',
+        body: new URLSearchParams({ grant_type: 'refresh_token', client_id: t.clientId || location.origin + '/', refresh_token: t.refresh_token }),
+      });
+      if (!r.ok) return null;
+      const j = await r.json();
+      t.access_token = j.access_token;
+      t.expires = Date.now() + j.expires_in * 1000;
+      try { localStorage.setItem('hassTokens', JSON.stringify(t)); } catch (e) {}
+    }
+    return t.access_token;
+  }
+  function openWS(tok) {
+    return new Promise((resolve, reject) => {
+      const ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/api/websocket');
+      const pending = {}; let id = 1;
+      ws.onmessage = (e) => {
+        const m = JSON.parse(e.data);
+        if (m.type === 'auth_required') ws.send(JSON.stringify({ type: 'auth', access_token: tok }));
+        else if (m.type === 'auth_ok') resolve({
+          call: (msg) => new Promise((ok, ko) => { const i = id++; pending[i] = [ok, ko]; ws.send(JSON.stringify({ ...msg, id: i })); }),
+        });
+        else if (m.type === 'auth_invalid') reject(new Error('auth_invalid'));
+        else if (m.type === 'result' && pending[m.id]) {
+          const [ok, ko] = pending[m.id]; delete pending[m.id];
+          m.success ? ok(m.result) : ko(m.error);
+        }
+      };
+      ws.onerror = () => reject(new Error('websocket'));
+      ws.onclose = () => { conn = null; };
+    });
+  }
+  async function callWS(msg) {
+    const h = frameHass();
+    if (h) return h.callWS(msg);
+    if (!conn) {
+      const tok = await token();
+      if (!tok) throw new Error('nologin');
+      conn = await openWS(tok);
+    }
+    return conn.call(msg);
+  }
+
+  /* ---------- Dashboards + Ansichten ---------- */
+  let panels = [];
+  const views = {};
+  let waitTimer = null;
+
+  async function loadPanels() {
+    try {
+      const p = await callWS({ type: 'get_panels' });
+      panels = Object.values(p).filter((x) => x.url_path && x.url_path !== 'dashboard-vorschau'
+        && (x.component_name === 'lovelace' || (x.title && x.show_in_sidebar !== false)));
+      $('#msg').textContent = '';
+      clearInterval(waitTimer); waitTimer = null;
+      renderDash();
+      loadViews(S.dash);
+    } catch (e) {
+      $('#msg').textContent = 'Nicht angemeldet – bitte im Fenster unten bei Home Assistant anmelden.';
+      $('#dashRow').innerHTML = '<span class="lbl">Nach der Anmeldung erscheinen hier die Dashboards.</span>';
+      if (!waitTimer) waitTimer = setInterval(() => { if (frameHass()) loadPanels(); }, 1500);
+    }
+  }
+  const panelTitle = (p) => p.title || (p.url_path === 'lovelace' ? 'Übersicht' : p.url_path);
+
+  function renderDash() {
+    const row = $('#dashRow');
+    row.innerHTML = '';
+    const list = panels
+      .filter((p) => p.component_name === 'lovelace' || S.system)
+      .sort((a, b) => (a.url_path === 'lovelace' ? -1 : b.url_path === 'lovelace' ? 1 : 0)
+        || (a.component_name === 'lovelace' ? 0 : 1) - (b.component_name === 'lovelace' ? 0 : 1)
+        || panelTitle(a).localeCompare(panelTitle(b), 'de'));
+    for (const p of list) {
+      const b = document.createElement('button');
+      b.className = 'nav' + (p.url_path === S.dash ? ' on' : '');
+      const ic = document.createElement('i');
+      ic.className = 'mdi mdi-' + (/^mdi:/.test(p.icon || '') ? p.icon.slice(4) : 'view-dashboard');
+      const t = document.createElement('span');
+      t.className = 't'; t.textContent = panelTitle(p);
+      b.append(ic, t);
+      b.title = panelTitle(p) + ' – /' + p.url_path + (p.require_admin ? ' (nur Admin)' : '');
+      b.onclick = () => go(p.url_path, null);
+      row.appendChild(b);
+    }
+  }
+
+  async function loadViews(dash) {
+    const p = panels.find((x) => x.url_path === dash);
+    if (!p || p.component_name !== 'lovelace') { views[dash] = []; renderViews(); return; }
+    if (!views[dash]) {
+      try {
+        const cfg = await callWS({ type: 'lovelace/config', url_path: dash === 'lovelace' ? null : dash, force: false });
+        views[dash] = (cfg.views || []).map((v, i) => ({ v, i })).filter(({ v }) => !v.subview)
+          .map(({ v, i }) => ({ path: v.path != null ? String(v.path) : String(i), title: v.title || v.path || `Ansicht ${i + 1}` }));
+      } catch (e) { views[dash] = []; } // automatisch erzeugte Dashboards haben keine Konfiguration
+    }
+    if (dash === S.dash) renderViews();
+  }
+
+  function renderViews() {
+    const row = $('#viewRow');
+    row.innerHTML = '';
+    const list = views[S.dash] || [];
+    if (list.length < 2) return;
+    const lbl = document.createElement('span');
+    lbl.className = 'lbl'; lbl.textContent = 'Ansicht:';
+    row.appendChild(lbl);
+    list.forEach((v, i) => {
+      const b = document.createElement('button');
+      const active = S.view ? S.view === v.path : i === 0;
+      b.className = 'b sm' + (active ? ' on' : '');
+      b.textContent = v.title;
+      b.onclick = () => go(S.dash, v.path);
+      row.appendChild(b);
+    });
+  }
+
+  const urlFor = () => '/' + S.dash + (S.view ? '/' + encodeURIComponent(S.view) : '') + (S.kiosk ? '?kiosk' : '');
+
+  function go(dash, view) {
+    S.dash = dash; S.view = view;
+    $('#ha').src = urlFor();
+    save(); renderDash(); renderViews(); loadViews(dash);
+  }
+
+  // Navigation innerhalb von HA (Klick im iframe) in den Buttons nachführen
+  setInterval(() => {
+    let path;
+    try { path = $('#ha').contentWindow.location.pathname; } catch (e) { return; }
+    const [d, v] = path.split('/').filter(Boolean).map(decodeURIComponent);
+    if (!d || d === 'auth') return;
+    if (d !== S.dash || (v || null) !== S.view) {
+      S.dash = d; S.view = v || null;
+      save(); renderDash(); renderViews(); loadViews(d);
+    }
+  }, 1000);
+
+  /* ---------- Bedienelemente ---------- */
+  document.querySelectorAll('#modeGrp button').forEach((b) => b.onclick = () => { S.mode = b.dataset.mode; save(); layout(); });
+  $('#zoom').oninput = (e) => { S.mode = 'custom'; S.pct = +e.target.value; save(); layout(); };
+  $('#side').classList.toggle('mini', !!S.mini);
+  $('#menu').onclick = () => {
+    S.mini = !S.mini; save();
+    $('#side').classList.toggle('mini', S.mini);
+    setTimeout(layout, 220); // nach der Animation neu einpassen
+  };
+  $('#reload').onclick = () => { $('#ha').src = urlFor(); };
+  // Als eigene Seite geöffnet (nicht im HA-Seitenleisten-Eintrag) → Weg zurück zu HA anbieten
+  if (window.top === window) $('#toha').hidden = false;
+  $('#toha').onclick = () => { location.href = '/'; };
+  // Als eigenes Fenster (Button „Neues Fenster“ im HA-Eintrag) → Lage und Größe merken,
+  // damit es beim nächsten Öffnen wieder auf demselben Monitor erscheint
+  if (window.name === 'dashboard-vorschau-fenster') {
+    let last = '';
+    const keep = () => {
+      const g = { x: window.screenX, y: window.screenY, w: window.innerWidth, h: window.innerHeight };
+      const j = JSON.stringify(g);
+      if (j !== last) { last = j; try { localStorage.setItem('dashboardViewerWindow', j); } catch (e) {} }
+    };
+    setInterval(keep, 2000); // Verschieben löst kein Ereignis aus
+    window.addEventListener('resize', keep);
+    window.addEventListener('beforeunload', keep);
+  }
+  $('#newtab').onclick = () => window.open(urlFor(), '_blank');
+  // Wie Strg + F5: Zwischenspeicher des HA-Service-Workers leeren, Karten-Ressourcen (/local/…)
+  // und diese Seite am Browser-Cache vorbei neu holen, dann alles neu laden
+  $('#hardreload').onclick = async () => {
+    const btn = $('#hardreload');
+    btn.disabled = true; btn.style.opacity = .6;
+    try {
+      if (window.caches) for (const k of await caches.keys()) await caches.delete(k);
+      if (navigator.serviceWorker) for (const r of await navigator.serviceWorker.getRegistrations()) r.update().catch(() => {});
+      const urls = [location.pathname];
+      try { (await callWS({ type: 'lovelace/resources' })).forEach((r) => urls.push(r.url)); } catch (e) {}
+      try {
+        const doc = $('#ha').contentDocument;
+        doc.querySelectorAll('script[src], link[rel=stylesheet][href]').forEach((el) => {
+          const u = new URL(el.src || el.href, location.href);
+          if (u.origin === location.origin) urls.push(u.pathname + u.search);
+        });
+      } catch (e) {}
+      await Promise.all([...new Set(urls)].map((u) => fetch(u, { cache: 'reload' }).catch(() => {})));
+    } finally {
+      save();
+      location.reload();
+    }
+  };
+  $('#gear').onclick = (e) => { e.stopPropagation(); $('#settings').hidden = !$('#settings').hidden; };
+  $('#settings').onclick = (e) => e.stopPropagation();
+  document.addEventListener('click', () => { $('#settings').hidden = true; });
+
+  const num = (id, key, min) => {
+    const el = $(id);
+    el.value = S[key] || '';
+    el.onchange = () => { const v = +el.value; S[key] = v >= min ? v : DEF[key]; el.value = S[key] || ''; save(); layout(); };
+  };
+  num('#sW', 'w', 200); num('#sH', 'h', 200); num('#sTab', 'tab', 1);
+  num('#sMon', 'mon', 1); num('#sMW', 'monW', 1); num('#sMH', 'monH', 1);
+
+  $('#calib').onclick = () => {
+    const m = +$('#sMeas').value;
+    if (!(m > 0)) return;
+    const shown = S.w * scale() / pxPerCm(); // was die Seite glaubt anzuzeigen
+    S.korr = S.korr * shown / m;
+    S.mode = 'real'; $('#sMeas').value = '';
+    save(); layout();
+  };
+  $('#calibReset').onclick = () => { S.korr = 1; save(); layout(); };
+
+  const chk = (id, key, fn) => { const el = $(id); el.checked = S[key]; el.onchange = () => { S[key] = el.checked; save(); fn(); }; };
+  chk('#sKiosk', 'kiosk', () => { $('#ha').src = urlFor(); });
+  chk('#sSystem', 'system', renderDash);
+  chk('#sBezel', 'bezel', layout);
+
+  window.addEventListener('resize', layout);
+  $('#ha').addEventListener('load', () => { if (!panels.length) loadPanels(); });
+
+  $('#ha').src = urlFor();
+  layout();
+  loadPanels();
+})();
+</script>
+</body>
+</html>

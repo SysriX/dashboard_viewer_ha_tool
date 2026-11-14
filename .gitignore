@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+*.bak*
+node_modules/
+secrets.yaml
+.env
